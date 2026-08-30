@@ -21,6 +21,7 @@ namespace Microsoft.Xna.Platform.Media
         private MediaFoundation.PresentationClock _clock;
 
         private Texture2D _lastFrame;
+        private long _lastFrameVersion = -1;
 
         private readonly Variant _positionCurrent = new Variant();
         private readonly Variant _positionBeginning = new Variant { ElementType = VariantElementType.Long, Value = 0L };
@@ -149,16 +150,35 @@ namespace Microsoft.Xna.Platform.Media
                 {
                     _lastFrame.Dispose();
                     _lastFrame = null;
+                    _lastFrameVersion = -1;
                 }
             }
             if (_lastFrame == null)
                 _lastFrame = new Texture2D(((IPlatformVideo)base.Video).Strategy.GraphicsDevice, base.Video.Width, base.Video.Height, false, SurfaceFormat.Bgr32);
 
             VideoPlatformStream _videoPlatformStream = ((IPlatformVideo)base.Video).Strategy.ToConcrete<ConcreteVideoStrategy>().GetVideoPlatformStream();
-            byte[] texData = _videoPlatformStream.SampleGrabber.TextureData;
-            if (texData != null)
-                _lastFrame.SetData(texData);
-            
+            VideoSampleGrabber sampleGrabber = _videoPlatformStream.SampleGrabber;
+
+            // GetTexture() is called once per drawn frame (uncapped, can be
+            // 100+Hz), but Media Foundation only decodes a new sample at the
+            // video's own frame rate (~24fps for a typical clip) - re-
+            // uploading the same unchanged buffer via SetData (a full CPU->
+            // GPU copy of the whole frame) on every one of those extra calls
+            // was previously the dominant cost of drawing this decorative
+            // background, confirmed via profiling. Skipping the upload
+            // when FrameVersion hasn't advanced since the last read cuts
+            // that down to once per actual decoded frame.
+            long version = sampleGrabber.FrameVersion;
+            if (version != _lastFrameVersion)
+            {
+                byte[] texData = sampleGrabber.TextureData;
+                if (texData != null)
+                {
+                    _lastFrame.SetData(texData);
+                    _lastFrameVersion = version;
+                }
+            }
+
             return _lastFrame;
         }
 
