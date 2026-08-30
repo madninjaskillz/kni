@@ -67,6 +67,9 @@
     <Compile Include="EffectCompiler\ShaderProfileType.cs" />
     <Compile Include="EffectCompiler\ShaderStage.cs" />
     <Compile Include="EffectCompiler\ShaderVersion.cs" />
+    <Compile Include="RawGlsl\RawGlslEffectContent.cs" />
+    <Compile Include="RawGlsl\RawGlslEffectImporter.cs" />
+    <Compile Include="RawGlsl\RawGlslEffectProcessor.cs" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ExternalTool.cs" />
