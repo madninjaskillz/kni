@@ -661,7 +661,17 @@ namespace Microsoft.Xna.Platform.Graphics.Utilities.Png
 
         private static byte[] ReverseByteArray(byte[] byteArray)
         {
-            return (byte[])byteArray.Reverse().ToArray();
+            // Not byteArray.Reverse().ToArray(): on net6.0+ that now binds
+            // to MemoryExtensions.Reverse(Span<T>) (in-place, returns
+            // void) instead of Enumerable.Reverse<T>(IEnumerable<T>) - a
+            // real overload-resolution break surfaced by building this
+            // project against net8.0-windows for the first time (2026-08-16,
+            // unrelated to whatever else prompted that build - just blocking
+            // it). Array.Reverse on a copy keeps the original's non-
+            // mutating, new-array-returning contract.
+            byte[] result = (byte[])byteArray.Clone();
+            Array.Reverse(result);
+            return result;
         }
     }
 }
