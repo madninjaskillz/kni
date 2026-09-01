@@ -75,6 +75,18 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
 
         public override CompiledEffectContent Process(RawGlslEffectContent input, ContentProcessorContext context)
         {
+            return Build(input, context);
+        }
+
+        /// <summary>
+        /// The whole build, split out so SlangEffectProcessor can reuse it: that
+        /// one GENERATES the GLSL rather than reading it from disk, but from
+        /// there the work is identical — same constant buffer, same attribute
+        /// list, same EffectObject, same writer. Nothing about the on-disk
+        /// format or the runtime contract depends on where the text came from.
+        /// </summary>
+        internal static CompiledEffectContent Build(RawGlslEffectContent input, ContentProcessorContext context)
+        {
             bool isGles;
             switch (context.TargetPlatform)
             {

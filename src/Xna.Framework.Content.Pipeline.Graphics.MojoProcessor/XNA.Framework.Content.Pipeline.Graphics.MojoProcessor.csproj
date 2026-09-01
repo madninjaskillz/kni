@@ -70,6 +70,10 @@
     <Compile Include="RawGlsl\RawGlslEffectContent.cs" />
     <Compile Include="RawGlsl\RawGlslEffectImporter.cs" />
     <Compile Include="RawGlsl\RawGlslEffectProcessor.cs" />
+    <Compile Include="RawGlsl\SlangEffectContent.cs" />
+    <Compile Include="RawGlsl\SlangEffectImporter.cs" />
+    <Compile Include="RawGlsl\SlangEffectProcessor.cs" />
+    <Compile Include="RawGlsl\SlangJson.cs" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ExternalTool.cs" />
