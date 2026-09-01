@@ -20,10 +20,31 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
     {
         public string Name;
 
-        /// <summary>One of "float", "vec2", "vec3", "vec4".</summary>
+        /// <summary>One of "float", "vec2", "vec3", "vec4", "mat4".</summary>
         public string Type;
 
         public int Offset;
+    }
+
+    /// <summary>
+    /// One vertex attribute the vertex shader declares as an "in".
+    ///
+    /// The GLSL name is free-form; what actually matches it to the app's
+    /// VertexDeclaration at draw time is (Usage, Index) - see
+    /// RawGlslEffectProcessor's runtime-contract header. So this exists
+    /// because a shader with anything other than Position0/TexCoord0 (a
+    /// per-vertex colour, a second texcoord) could not be expressed at all
+    /// until it did.
+    /// </summary>
+    public class RawGlslAttributeInfo
+    {
+        public string Name;
+
+        /// <summary>VertexElementUsage spelled as its enum name -
+        /// "Position", "Color", "TextureCoordinate", "Normal", ...</summary>
+        public string Usage;
+
+        public int Index;
     }
 
     /// <summary>A texture unit binding - Slot must match whatever the
@@ -47,6 +68,7 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
         public string VertexShaderSource;
 
         public List<RawGlslParameterInfo> Parameters = new List<RawGlslParameterInfo>();
+        public List<RawGlslAttributeInfo> Attributes = new List<RawGlslAttributeInfo>();
         public List<RawGlslSamplerInfo> Samplers = new List<RawGlslSamplerInfo>();
         public List<RawGlslTechniqueInfo> Techniques = new List<RawGlslTechniqueInfo>();
     }

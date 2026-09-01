@@ -64,6 +64,19 @@ namespace Microsoft.Xna.Framework.Content.Pipeline
                         }
                         break;
 
+                    case "attribute":
+                        {
+                            if (parts.Length != 3)
+                                throw new InvalidContentException("Malformed 'attribute' line (expected 'attribute: Name Usage index'): " + line, content.Identity);
+
+                            RawGlslAttributeInfo a = new RawGlslAttributeInfo();
+                            a.Name = parts[0];
+                            a.Usage = parts[1];
+                            a.Index = int.Parse(parts[2]);
+                            content.Attributes.Add(a);
+                        }
+                        break;
+
                     case "sampler":
                         {
                             if (parts.Length != 2)

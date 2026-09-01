@@ -47,9 +47,12 @@
 //
 // MANIFEST GRAMMAR (.glslfx, read by RawGlslEffectImporter):
 //   vertex: <path to shared .vert file>
-//   param: <Name> <float|vec2|vec3|vec4> <byteOffset>
+//   param: <Name> <float|vec2|vec3|vec4|mat4> <byteOffset>
+//   attribute: <Name> <VertexElementUsage> <usageIndex>
 //   sampler: <textureUnit> <Name>
 //   technique: <TechniqueName> <path to .frag file>
+// "attribute" is optional; declaring none keeps the original hardcoded
+// Position0 + TexCoord0 pair, which is all a fullscreen effect needs.
 // One "param" line per uniform; all params are packed into a single
 // constant buffer named "Params". Offsets are chosen by the manifest
 // author (see VisEffectsGL.glslfx) - this processor does not attempt
@@ -97,11 +100,7 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
 
             ShaderData vsShader = new ShaderData(ShaderStage.Vertex, effect.Shaders.Count);
             vsShader.ShaderCode = Encoding.ASCII.GetBytes(BuildVertexGlsl(input.VertexShaderSource, isGles));
-            vsShader._attributes = new ShaderData.Attribute[]
-            {
-                MakeAttribute(PositionAttributeName, VertexElementUsage.Position, 0),
-                MakeAttribute(TexCoordAttributeName, VertexElementUsage.TextureCoordinate, 0),
-            };
+            vsShader._attributes = BuildAttributes(input);
             vsShader._samplers = new SamplerInfo[0];
             vsShader._cbuffers = new int[0];
             vsShader.ShaderFunctionName = "__RawGlslVS";
@@ -207,8 +206,19 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
                     param.rows = 1;
                     param.columns = 4;
                     break;
+                case "mat4":
+                    // 4x4, so 64 bytes, so four consecutive vec4s of the one
+                    // uniform array the runtime uploads. The GLSL indexes them
+                    // by hand like every other param here; declaring the shape
+                    // is what lets EffectParameter.SetValue(Matrix) write all
+                    // 64 bytes at the right offset.
+                    param.class_ = EffectObject.PARAMETER_CLASS.MATRIX_COLUMNS;
+                    param.rows = 4;
+                    param.columns = 4;
+                    break;
+
                 default:
-                    throw new InvalidContentException("Unknown param type '" + type + "' (expected float/vec2/vec3/vec4).", identity);
+                    throw new InvalidContentException("Unknown param type '" + type + "' (expected float/vec2/vec3/vec4/mat4).", identity);
             }
         }
 
@@ -231,6 +241,49 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
                 samplers[i] = si;
             }
             return samplers;
+        }
+
+        /// <summary>
+        /// The vertex shader's "in" declarations, from the manifest - or the
+        /// original hardcoded Position0/TexCoord0 pair when it declares none,
+        /// so every existing .glslfx keeps working untouched.
+        ///
+        /// Those two were hardcoded because a fullscreen-triangle vis effect
+        /// needs nothing else. Anything with a per-vertex colour or a second
+        /// texcoord - a UI geometry batcher, say - could not be expressed at
+        /// all, which is what the "attribute:" line is for.
+        /// </summary>
+        private static ShaderData.Attribute[] BuildAttributes(RawGlslEffectContent input)
+        {
+            if (input.Attributes.Count == 0)
+            {
+                return new ShaderData.Attribute[]
+                {
+                    MakeAttribute(PositionAttributeName, VertexElementUsage.Position, 0),
+                    MakeAttribute(TexCoordAttributeName, VertexElementUsage.TextureCoordinate, 0),
+                };
+            }
+
+            ShaderData.Attribute[] attributes = new ShaderData.Attribute[input.Attributes.Count];
+            for (int i = 0; i < input.Attributes.Count; i++)
+            {
+                RawGlslAttributeInfo a = input.Attributes[i];
+
+                VertexElementUsage usage;
+                try
+                {
+                    usage = (VertexElementUsage)Enum.Parse(typeof(VertexElementUsage), a.Usage, true);
+                }
+                catch (Exception)
+                {
+                    throw new InvalidContentException(
+                        "Unknown vertex element usage '" + a.Usage + "' on attribute '" + a.Name + "'.", input.Identity);
+                }
+
+                attributes[i] = MakeAttribute(a.Name, usage, a.Index);
+            }
+
+            return attributes;
         }
 
         private static ShaderData.Attribute MakeAttribute(string name, VertexElementUsage usage, int index)
