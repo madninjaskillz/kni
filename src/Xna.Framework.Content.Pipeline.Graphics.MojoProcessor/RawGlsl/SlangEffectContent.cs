@@ -42,5 +42,14 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
         public List<RawGlslAttributeInfo> Attributes = new List<RawGlslAttributeInfo>();
 
         public List<SlangTechniqueInfo> Techniques = new List<SlangTechniqueInfo>();
+
+        /// <summary>
+        /// fxc profiles for the D3D output's technique block, which Slang has
+        /// no concept of. Defaulted to the Reach-safe pair this pipeline has
+        /// always used; a manifest can raise them.
+        /// </summary>
+        public string VertexProfile = "vs_4_0_level_9_1";
+
+        public string PixelProfile = "ps_4_0_level_9_1";
     }
 }

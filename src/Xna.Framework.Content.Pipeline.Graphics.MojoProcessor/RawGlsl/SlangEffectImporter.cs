@@ -56,6 +56,17 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
                         }
                         break;
 
+                    case "profile":
+                        {
+                            if (parts.Length != 2)
+                                throw new InvalidContentException(
+                                    "Malformed 'profile' line (expected 'profile: vs_profile ps_profile'): " + line, content.Identity);
+
+                            content.VertexProfile = parts[0];
+                            content.PixelProfile = parts[1];
+                        }
+                        break;
+
                     case "technique":
                         {
                             if (parts.Length != 3)

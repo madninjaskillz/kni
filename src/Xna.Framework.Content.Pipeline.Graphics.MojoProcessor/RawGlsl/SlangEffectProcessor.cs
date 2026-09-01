@@ -55,6 +55,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using Microsoft.Xna.Framework.Content.Pipeline.Graphics;
 
 namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
 {
@@ -70,6 +71,17 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
 
         public override CompiledEffectContent Process(SlangEffectContent input, ContentProcessorContext context)
         {
+            string slangc = FindTool("SLANGC", "slangc.exe", null, input.Identity,
+                "Slang (https://github.com/shader-slang/slang/releases) - set SLANGC to slangc.exe, or put it on PATH.");
+
+            // D3D wants HLSL, and gets it from the SAME .slang. That is the
+            // whole point of this processor existing rather than a second
+            // hand-written source: DirectX (and an eventual Xbox build, which
+            // cannot be OpenGL at all) is a first-class output here, not the
+            // thing the GL path is working around.
+            if (context.TargetPlatform == TargetPlatform.Windows)
+                return ProcessHlsl(input, context, slangc);
+
             bool isGles;
             switch (context.TargetPlatform)
             {
@@ -77,12 +89,10 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
                 case TargetPlatform.BlazorGL: isGles = true; break;
                 default:
                     throw new InvalidContentException(
-                        string.Format("SlangEffectProcessor only supports DesktopGL/BlazorGL targets, not {0}.", context.TargetPlatform),
+                        string.Format("SlangEffectProcessor supports Windows/DesktopGL/BlazorGL targets, not {0}.", context.TargetPlatform),
                         input.Identity);
             }
 
-            string slangc = FindTool("SLANGC", "slangc.exe", null, input.Identity,
-                "Slang (https://github.com/shader-slang/slang/releases) - set SLANGC to slangc.exe, or put it on PATH.");
             string spirvCross = FindTool("SPIRV_CROSS", "spirv-cross.exe", "VULKAN_SDK", input.Identity,
                 "SPIRV-Cross - install the Vulkan SDK (it ships Bin/spirv-cross.exe), or set SPIRV_CROSS.");
 
@@ -154,6 +164,216 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
             }
         }
 
+        // ---- HLSL / D3D ---------------------------------------------------
+
+        /// <summary>
+        /// The D3D path: slangc emits HLSL, this assembles a .fx from it, and
+        /// the STOCK EffectProcessor compiles that exactly as it always has.
+        /// Nothing about the D3D pipeline changes -- fxc, the profiles, the
+        /// EffectObject, all identical. Only the authorship moves.
+        ///
+        /// TWO THINGS HAVE TO BE FIXED UP, and both are why this cannot just
+        /// hand slangc's output straight to fxc:
+        ///
+        /// 1. SLANG WRAPS THE CBUFFER CONTENTS IN A STRUCT --
+        ///    "cbuffer Parameters { SLANG_... Parameters; }" -- even when the
+        ///    uniforms are declared as loose globals. D3D reflection then
+        ///    reports ONE parameter of struct type, so
+        ///    effect.Parameters["MatrixTransform"] is null and every caller
+        ///    that sets a uniform by name throws. The struct is inlined and the
+        ///    "Parameters." prefix dropped.
+        /// 2. SLANGC REFUSES ONE -o FOR TWO ENTRY POINTS and emits a complete,
+        ///    self-contained file per entry, so the vertex and pixel outputs
+        ///    have to be merged -- shared declarations once, both entry
+        ///    functions, then the technique block a .fx needs and Slang has no
+        ///    concept of.
+        ///
+        /// Both are deterministic text transforms over generated input, and
+        /// both fail LOUDLY: if either gets it wrong, fxc rejects the result at
+        /// build time rather than something rendering oddly later.
+        /// </summary>
+        private static CompiledEffectContent ProcessHlsl(
+            SlangEffectContent input, ContentProcessorContext context, string slangc)
+        {
+            string temp = Path.Combine(Path.GetTempPath(), "kni-slang-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temp);
+
+            try
+            {
+                var fx = new StringBuilder();
+                var techniques = new StringBuilder();
+                string baseText = null;
+
+                foreach (SlangTechniqueInfo technique in input.Techniques)
+                {
+                    string vs = FlattenCBuffer(
+                        GenerateHlsl(slangc, input.SourcePath, technique.VertexEntryPoint, "vertex", temp, input.Identity),
+                        input.Identity);
+                    string ps = FlattenCBuffer(
+                        GenerateHlsl(slangc, input.SourcePath, technique.FragmentEntryPoint, "fragment", temp, input.Identity),
+                        input.Identity);
+
+                    if (baseText == null)
+                        baseText = vs;
+                    else
+                        baseText = MergeInto(baseText, vs, technique.VertexEntryPoint, input.Identity);
+
+                    baseText = MergeInto(baseText, ps, technique.FragmentEntryPoint, input.Identity);
+
+                    techniques.Append("technique ").Append(technique.Name).Append("\n{\n    pass P0\n    {\n");
+                    techniques.Append("        VertexShader = compile ").Append(input.VertexProfile)
+                        .Append(' ').Append(technique.VertexEntryPoint).Append("();\n");
+                    techniques.Append("        PixelShader = compile ").Append(input.PixelProfile)
+                        .Append(' ').Append(technique.FragmentEntryPoint).Append("();\n");
+                    techniques.Append("    }\n}\n\n");
+                }
+
+                fx.Append(baseText).Append("\n\n").Append(techniques);
+
+                // A real file on disk: EffectProcessor preprocesses relative to
+                // its SourceFilename, so it needs somewhere to resolve from.
+                string fxPath = Path.Combine(temp, Path.GetFileNameWithoutExtension(input.SourcePath) + ".fx");
+                File.WriteAllText(fxPath, fx.ToString());
+
+                var effect = new EffectContent();
+                effect.Identity = new ContentIdentity(fxPath);
+                effect.EffectCode = fx.ToString();
+
+                return new EffectProcessor().Process(effect, context);
+            }
+            finally
+            {
+                try { Directory.Delete(temp, true); }
+                catch (Exception) { }
+            }
+        }
+
+        private static string GenerateHlsl(
+            string slangc, string source, string entryPoint, string stage, string temp, ContentIdentity identity)
+        {
+            string outPath = Path.Combine(temp, entryPoint + ".hlsl");
+
+            // -no-mangle, or every uniform arrives as "MatrixTransform_0" and
+            // no caller can find it by the name it wrote in the .slang.
+            Run(slangc, Quote(source) + " -target hlsl -no-mangle -entry " + entryPoint
+                + " -stage " + stage + " -o " + Quote(outPath), identity, "slangc (hlsl)");
+
+            return File.ReadAllText(outPath);
+        }
+
+        /// <summary>
+        /// Turns "cbuffer P : register(b0) { SomeStruct P; }" into a cbuffer
+        /// holding the struct's fields directly, and drops the now-redundant
+        /// "P." prefix from every use. See ProcessHlsl for why.
+        /// </summary>
+        private static string FlattenCBuffer(string hlsl, ContentIdentity identity)
+        {
+            var cbuffer = new System.Text.RegularExpressions.Regex(
+                @"cbuffer\s+(\w+)\s*:\s*register\(b\d+\)\s*\{\s*(\w+)\s+(\w+);\s*\}");
+
+            System.Text.RegularExpressions.Match m = cbuffer.Match(hlsl);
+            if (!m.Success)
+            {
+                // No constant buffer at all, or one that is already flat. Both
+                // are fine; nothing to do.
+                return hlsl;
+            }
+
+            string name = m.Groups[1].Value;
+            string structType = m.Groups[2].Value;
+            string variable = m.Groups[3].Value;
+
+            var structRegex = new System.Text.RegularExpressions.Regex(
+                @"struct\s+" + structType + @"\s*\{(?<body>[^}]*)\};",
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+
+            System.Text.RegularExpressions.Match sm = structRegex.Match(hlsl);
+            if (!sm.Success)
+            {
+                throw new InvalidContentException(
+                    "Generated HLSL declares cbuffer '" + name + "' as struct '" + structType
+                    + "', but that struct's body was not found to inline.", identity);
+            }
+
+            string flattened = "cbuffer " + name + " : register(b0)\n{"
+                + sm.Groups["body"].Value.TrimEnd() + "\n}";
+
+            hlsl = hlsl.Substring(0, m.Index) + flattened + hlsl.Substring(m.Index + m.Length);
+            return hlsl.Replace(variable + ".", string.Empty);
+        }
+
+        /// <summary>
+        /// Folds one generated HLSL file into another: whatever it declares
+        /// that the base does not, then its entry function.
+        ///
+        /// The two files come from the same module with the same flags, so
+        /// shared declarations are byte-identical and deduping by NAME is
+        /// enough - the vertex file has the cbuffer and the input struct, the
+        /// pixel file has the texture and sampler, and both have the varying
+        /// struct.
+        /// </summary>
+        private static string MergeInto(string baseText, string other, string entryPoint, ContentIdentity identity)
+        {
+            var result = new StringBuilder(baseText);
+
+            var structs = new System.Text.RegularExpressions.Regex(
+                @"struct\s+(?<name>\w+)\s*\{[^}]*\};",
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+
+            foreach (System.Text.RegularExpressions.Match m in structs.Matches(other))
+            {
+                string name = m.Groups["name"].Value;
+                if (!System.Text.RegularExpressions.Regex.IsMatch(baseText, @"struct\s+" + name + @"\s*\{"))
+                    result.Append("\n\n").Append(m.Value);
+            }
+
+            var resources = new System.Text.RegularExpressions.Regex(
+                @"^\s*(?:Texture\w*|SamplerState|SamplerComparisonState)\s*(?:<[^>]*>)?\s+(?<name>\w+)\s*:\s*register\([^)]*\);",
+                System.Text.RegularExpressions.RegexOptions.Multiline);
+
+            foreach (System.Text.RegularExpressions.Match m in resources.Matches(other))
+            {
+                string name = m.Groups["name"].Value;
+                if (!System.Text.RegularExpressions.Regex.IsMatch(
+                        baseText, @"\b" + name + @"\s*:\s*register\("))
+                    result.Append("\n\n").Append(m.Value.Trim());
+            }
+
+            result.Append("\n\n").Append(ExtractFunction(other, entryPoint, identity));
+            return result.ToString();
+        }
+
+        /// <summary>The named function, signature through matching brace.</summary>
+        private static string ExtractFunction(string hlsl, string name, ContentIdentity identity)
+        {
+            var signature = new System.Text.RegularExpressions.Regex(
+                @"^[^\r\n/#][^\r\n]*\b" + name + @"\s*\(",
+                System.Text.RegularExpressions.RegexOptions.Multiline);
+
+            System.Text.RegularExpressions.Match m = signature.Match(hlsl);
+            if (!m.Success)
+                throw new InvalidContentException("Generated HLSL has no function '" + name + "'.", identity);
+
+            int open = hlsl.IndexOf('{', m.Index);
+            if (open < 0)
+                throw new InvalidContentException("Function '" + name + "' has no body.", identity);
+
+            int depth = 0;
+            for (int i = open; i < hlsl.Length; i++)
+            {
+                if (hlsl[i] == '{')
+                    depth++;
+                else if (hlsl[i] == '}')
+                {
+                    depth--;
+                    if (depth == 0)
+                        return hlsl.Substring(m.Index, i - m.Index + 1);
+                }
+            }
+
+            throw new InvalidContentException("Function '" + name + "' is not closed.", identity);
+        }
+
         // ---- generation ---------------------------------------------------
 
         private static string Generate(
@@ -209,6 +429,25 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
             // The runtime finds the constant buffer by the name
             // RawGlslEffectProcessor gives it.
             text = text.Replace(SlangUniformArrayName(text), RawGlslConstantBufferName);
+
+            // HIGHP, NOT MEDIUMP. spirv-cross defaults GLSL ES fragment shaders
+            // to "precision mediump float;" and offers no flag to change it,
+            // and mediump is not enough for either of the things this pipeline
+            // does:
+            //
+            //  - SDF TEXT. The glyph alpha is a smoothstep across a distance
+            //    field, and at mediump the ramp quantises enough to EAT THIN
+            //    STROKES -- "blind" rendered as "olinc" in a real browser,
+            //    which is how this was found. The hand-written shaders this
+            //    replaced all declared highp for exactly this reason.
+            //  - CLIP RECTS, which are device pixels. mediump guarantees only
+            //    ~10 bits of mantissa, so integers stop being exact past 2048
+            //    -- and a maximised window on this machine is 3840 wide.
+            //
+            // ES 3.0 requires highp support in fragment shaders, so this is not
+            // a gamble.
+            if (isGles)
+                text = text.Replace("precision mediump float;", "precision highp float;");
 
             return text;
         }
