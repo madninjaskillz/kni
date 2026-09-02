@@ -458,20 +458,28 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
         /// Whatever spirv-cross called the flattened uniform array. Found by
         /// looking rather than assumed, because the name is derived from the
         /// Slang parameter group and would change with it.
+        ///
+        /// A PRECISION QUALIFIER SITS BETWEEN "uniform" AND "vec4", and missing
+        /// it cost a long hunt. GLSL 330 emits "uniform vec4 X[6];" but GLSL ES
+        /// 300 emits "uniform highp vec4 X[6];" in the FRAGMENT shader (the
+        /// vertex shader has no qualifier, so it matched and looked fine).
+        /// Matching the bare literal therefore renamed the array in the vertex
+        /// stage and NOT in the fragment stage on WebGL2 -- the runtime looks
+        /// the buffer up by the constant buffer's name, failed to find it, and
+        /// never uploaded it, so every uniform the fragment read came back
+        /// zero. For SDF text that means Smoothing == 0, which turns the
+        /// antialiasing ramp smoothstep(0.5 - s, 0.5 + s, d) into a hard step
+        /// at 0.5: glyphs came out aliased and eroded, on that one backend
+        /// only. GeometryBatch was immune purely because its fragment shader
+        /// reads no uniforms at all.
         /// </summary>
         private static string SlangUniformArrayName(string glsl)
         {
-            const string marker = "uniform vec4 ";
-            int at = glsl.IndexOf(marker, StringComparison.Ordinal);
-            if (at < 0)
-                return RawGlslConstantBufferName;
+            var declaration = new System.Text.RegularExpressions.Regex(
+                @"uniform\s+(?:lowp\s+|mediump\s+|highp\s+)?vec4\s+(?<name>\w+)\s*\[");
 
-            int start = at + marker.Length;
-            int end = glsl.IndexOf('[', start);
-            if (end < 0)
-                return RawGlslConstantBufferName;
-
-            return glsl.Substring(start, end - start).Trim();
+            System.Text.RegularExpressions.Match m = declaration.Match(glsl);
+            return m.Success ? m.Groups["name"].Value : RawGlslConstantBufferName;
         }
 
         private static string StripVersion(string glsl)
@@ -507,19 +515,28 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
             return body.Substring(0, main) + "uniform vec4 posFixup;\n\n" + body.Substring(main);
         }
 
+        /// <summary>
+        /// The sampler uniforms the generated fragment shader declares.
+        ///
+        /// PRECISION QUALIFIERS ARE PART OF THE DECLARATION, and missing them
+        /// was a real bug with a very confusing symptom. GLSL 330 emits
+        /// "uniform sampler2D X;" but GLSL ES 300 emits "uniform highp
+        /// sampler2D X;", so matching the literal "uniform sampler2D " found
+        /// every sampler on desktop and NONE on WebGL2 -- the effect then
+        /// shipped with an empty sampler list, nothing bound the sampler to a
+        /// texture unit or applied the caller's sampler state, and the font
+        /// atlas got sampled with default filtering. Glyph edges came out hard
+        /// and eroded ON THE WEB ONLY, while shapes were unaffected because
+        /// they sample a single white texel where filtering cannot show.
+        /// </summary>
         private static List<string> FindSamplers(string glsl)
         {
             var found = new List<string>();
-            const string marker = "uniform sampler2D ";
-            int at = 0;
-            while ((at = glsl.IndexOf(marker, at, StringComparison.Ordinal)) >= 0)
-            {
-                int start = at + marker.Length;
-                int end = glsl.IndexOfAny(new char[] { ';', '[', ' ' }, start);
-                if (end > start)
-                    found.Add(glsl.Substring(start, end - start).Trim());
-                at = start;
-            }
+            var declaration = new System.Text.RegularExpressions.Regex(
+                @"uniform\s+(?:lowp\s+|mediump\s+|highp\s+)?sampler(?:1D|2D|3D|Cube|2DArray)\s+(?<name>\w+)");
+
+            foreach (System.Text.RegularExpressions.Match m in declaration.Matches(glsl))
+                found.Add(m.Groups["name"].Value);
 
             return found;
         }
