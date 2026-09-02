@@ -67,6 +67,18 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
                         }
                         break;
 
+                    case "sampler":
+                        {
+                            if (parts.Length != 2)
+                                throw new InvalidContentException("Malformed 'sampler' line (expected 'sampler: slot Name'): " + line, content.Identity);
+
+                            RawGlslSamplerInfo si = new RawGlslSamplerInfo();
+                            si.Slot = int.Parse(parts[0]);
+                            si.Name = parts[1];
+                            content.Samplers.Add(si);
+                        }
+                        break;
+
                     case "technique":
                         {
                             if (parts.Length != 3)

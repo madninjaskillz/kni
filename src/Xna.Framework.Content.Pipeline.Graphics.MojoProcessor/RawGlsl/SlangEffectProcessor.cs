@@ -140,17 +140,25 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
                         PixelShaderSource = ps,
                     });
 
-                    foreach (string sampler in FindSamplers(ps))
+                    // DECLARED samplers win outright. Detection can only
+                    // assign units by declaration order, and order is not slot
+                    // -- see SlangEffectContent.Samplers.
+                    if (input.Samplers.Count > 0)
                     {
-                        if (!generated.Samplers.Exists(s => s.Name == sampler))
+                        generated.Samplers = input.Samplers;
+                    }
+                    else
+                    {
+                        foreach (string sampler in FindSamplers(ps))
                         {
-                            generated.Samplers.Add(new RawGlslSamplerInfo
+                            if (!generated.Samplers.Exists(s => s.Name == sampler))
                             {
-                                // Unit by declaration order, matching the order
-                                // the caller binds GraphicsDevice.Textures[n].
-                                Slot = generated.Samplers.Count,
-                                Name = sampler,
-                            });
+                                generated.Samplers.Add(new RawGlslSamplerInfo
+                                {
+                                    Slot = generated.Samplers.Count,
+                                    Name = sampler,
+                                });
+                            }
                         }
                     }
                 }
@@ -303,44 +311,150 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
         }
 
         /// <summary>
-        /// Folds one generated HLSL file into another: whatever it declares
-        /// that the base does not, then its entry function.
+        /// Folds one generated HLSL file into another: every top-level
+        /// definition the base does not already have.
         ///
-        /// The two files come from the same module with the same flags, so
-        /// shared declarations are byte-identical and deduping by NAME is
-        /// enough - the vertex file has the cbuffer and the input struct, the
-        /// pixel file has the texture and sampler, and both have the varying
-        /// struct.
+        /// This has to be GENERAL, not "structs, resources and the entry
+        /// point". slangc emits a complete, self-contained file per entry
+        /// point, so the second file carries every helper ITS entry calls --
+        /// and with nine entry points sharing a raymarcher, that is most of the
+        /// shader. Copying only the entry function produced HLSL that
+        /// referenced functions and uniforms nobody had declared, which fxc
+        /// reported as "undeclared identifier" a hundred lines from the cause.
+        ///
+        /// Dedupe is by NAME, which is sound here because both files come from
+        /// the same module compiled with the same flags: a shared helper is
+        /// byte-identical in both, so keeping the first copy loses nothing.
         /// </summary>
         private static string MergeInto(string baseText, string other, string entryPoint, ContentIdentity identity)
         {
             var result = new StringBuilder(baseText);
 
-            var structs = new System.Text.RegularExpressions.Regex(
-                @"struct\s+(?<name>\w+)\s*\{[^}]*\};",
-                System.Text.RegularExpressions.RegexOptions.Singleline);
-
-            foreach (System.Text.RegularExpressions.Match m in structs.Matches(other))
+            foreach (KeyValuePair<string, string> definition in TopLevelDefinitions(other))
             {
-                string name = m.Groups["name"].Value;
-                if (!System.Text.RegularExpressions.Regex.IsMatch(baseText, @"struct\s+" + name + @"\s*\{"))
-                    result.Append("\n\n").Append(m.Value);
+                if (!DeclaresName(baseText, definition.Key) && !DeclaresName(result.ToString(), definition.Key))
+                    result.Append("\n\n").Append(definition.Value);
             }
 
-            var resources = new System.Text.RegularExpressions.Regex(
-                @"^\s*(?:Texture\w*|SamplerState|SamplerComparisonState)\s*(?:<[^>]*>)?\s+(?<name>\w+)\s*:\s*register\([^)]*\);",
-                System.Text.RegularExpressions.RegexOptions.Multiline);
+            if (!DeclaresName(result.ToString(), entryPoint))
+                result.Append("\n\n").Append(ExtractFunction(other, entryPoint, identity));
 
-            foreach (System.Text.RegularExpressions.Match m in resources.Matches(other))
-            {
-                string name = m.Groups["name"].Value;
-                if (!System.Text.RegularExpressions.Regex.IsMatch(
-                        baseText, @"\b" + name + @"\s*:\s*register\("))
-                    result.Append("\n\n").Append(m.Value.Trim());
-            }
-
-            result.Append("\n\n").Append(ExtractFunction(other, entryPoint, identity));
             return result.ToString();
+        }
+
+        private static bool DeclaresName(string hlsl, string name)
+        {
+            return System.Text.RegularExpressions.Regex.IsMatch(
+                hlsl, @"(?:struct|cbuffer)\s+" + name + @"\b")
+                || System.Text.RegularExpressions.Regex.IsMatch(
+                    hlsl, @"^[^\r\n/#][^\r\n(]*\b" + name + @"\s*\(",
+                    System.Text.RegularExpressions.RegexOptions.Multiline)
+                || System.Text.RegularExpressions.Regex.IsMatch(
+                    hlsl, @"\b" + name + @"\s*:\s*register\(")
+                || System.Text.RegularExpressions.Regex.IsMatch(
+                    hlsl, @"^\s*static\s+[^\r\n]*\b" + name + @"\s*;",
+                    System.Text.RegularExpressions.RegexOptions.Multiline);
+        }
+
+        /// <summary>
+        /// Every top-level definition in a generated HLSL file, as
+        /// (name, text). Walks brace depth rather than pattern-matching whole
+        /// constructs, because a function body contains everything a top-level
+        /// construct looks like.
+        /// </summary>
+        private static List<KeyValuePair<string, string>> TopLevelDefinitions(string hlsl)
+        {
+            var found = new List<KeyValuePair<string, string>>();
+            int i = 0;
+
+            while (i < hlsl.Length)
+            {
+                // Skip whitespace, preprocessor lines and comments between
+                // definitions. #line directives are dense in Slang's output.
+                while (i < hlsl.Length && char.IsWhiteSpace(hlsl[i]))
+                    i++;
+
+                if (i >= hlsl.Length)
+                    break;
+
+                if (hlsl[i] == '#' || (i + 1 < hlsl.Length && hlsl[i] == '/' && hlsl[i + 1] == '/'))
+                {
+                    int eol = hlsl.IndexOf('\n', i);
+                    if (eol < 0)
+                        break;
+
+                    i = eol + 1;
+                    continue;
+                }
+
+                int begin = i;
+                int depth = 0;
+                bool sawBrace = false;
+
+                while (i < hlsl.Length)
+                {
+                    char c = hlsl[i];
+                    if (c == '{')
+                    {
+                        depth++;
+                        sawBrace = true;
+                    }
+                    else if (c == '}')
+                    {
+                        depth--;
+                        if (depth == 0)
+                        {
+                            i++;
+
+                            // A struct/cbuffer ends "};" - take the semicolon.
+                            while (i < hlsl.Length && (hlsl[i] == ' ' || hlsl[i] == '\r' || hlsl[i] == '\n'))
+                                i++;
+
+                            if (i < hlsl.Length && hlsl[i] == ';')
+                                i++;
+
+                            break;
+                        }
+                    }
+                    else if (c == ';' && depth == 0 && !sawBrace)
+                    {
+                        // A plain declaration: a resource, a static global.
+                        i++;
+                        break;
+                    }
+
+                    i++;
+                }
+
+                string text = hlsl.Substring(begin, Math.Min(i, hlsl.Length) - begin).Trim();
+                if (text.Length == 0)
+                    continue;
+
+                string name = DefinitionName(text);
+                if (name != null)
+                    found.Add(new KeyValuePair<string, string>(name, text));
+            }
+
+            return found;
+        }
+
+        /// <summary>The declared name of one top-level definition, or null when
+        /// it is something this does not need to carry across.</summary>
+        private static string DefinitionName(string text)
+        {
+            System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(
+                text, @"^(?:struct|cbuffer)\s+(?<name>\w+)");
+            if (m.Success)
+                return m.Groups["name"].Value;
+
+            // A function: the identifier immediately before the parameter list.
+            m = System.Text.RegularExpressions.Regex.Match(text, @"(?<name>\w+)\s*\([^)]*\)\s*(?::\s*\w+\s*)?\{");
+            if (m.Success)
+                return m.Groups["name"].Value;
+
+            // A resource or a static global.
+            m = System.Text.RegularExpressions.Regex.Match(text, @"(?<name>\w+)\s*(?::\s*register\([^)]*\))?\s*;\s*$");
+            return m.Success ? m.Groups["name"].Value : null;
         }
 
         /// <summary>The named function, signature through matching brace.</summary>

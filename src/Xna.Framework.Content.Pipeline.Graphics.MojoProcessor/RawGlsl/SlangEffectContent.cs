@@ -41,6 +41,18 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
         /// </summary>
         public List<RawGlslAttributeInfo> Attributes = new List<RawGlslAttributeInfo>();
 
+        /// <summary>
+        /// Texture units, declared rather than detected.
+        ///
+        /// The processor can find sampler declarations in the generated GLSL,
+        /// but only in DECLARATION ORDER, and order is not slot: an effect
+        /// whose second sampler must sit on unit 1 for every technique (a
+        /// render target read back by one pass) cannot express that by being
+        /// written second. Declaring them is the only way to be sure, so an
+        /// empty list means "detect", and a non-empty one wins.
+        /// </summary>
+        public List<RawGlslSamplerInfo> Samplers = new List<RawGlslSamplerInfo>();
+
         public List<SlangTechniqueInfo> Techniques = new List<SlangTechniqueInfo>();
 
         /// <summary>
