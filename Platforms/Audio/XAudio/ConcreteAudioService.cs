@@ -131,6 +131,23 @@ namespace Microsoft.Xna.Platform.Audio
 
         public override void PlatformPopulateCaptureDevices(List<Microphone> microphones, ref Microphone defaultMicrophone)
         {
+            // Capture is Media Foundation's, not XAudio2's - XAudio2 has no
+            // capture side at all. See ConcreteMicrophone for why that is not
+            // the contradiction it looks like.
+            List<KeyValuePair<string, bool>> devices = ConcreteMicrophone.EnumerateDevices();
+
+            for (int i = 0; i < devices.Count; i++)
+            {
+                Microphone microphone = base.CreateMicrophone(devices[i].Key);
+                microphones.Add(microphone);
+                if (devices[i].Value)
+                    defaultMicrophone = microphone;
+            }
+
+            // Nothing claimed the default role (a machine with capture
+            // devices but no console default): the first is better than none.
+            if (defaultMicrophone == null && microphones.Count > 0)
+                defaultMicrophone = microphones[0];
         }
 
         internal SubmixVoice ReverbVoice
