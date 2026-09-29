@@ -46,7 +46,9 @@ namespace Microsoft.Xna.Platform.Audio
 
         public int DynamicPlatformGetPendingBufferCount()
         {
-            return _queuedBuffers.Count;
+            // Not under SyncHandle (PendingBufferCount does not take it), so
+            // this must not touch the list: count a deferred end as done.
+            return Math.Max(0, _queuedBuffers.Count - _deferredBufferEnds.Count);
         }
 
         public override void PlatformPause()
@@ -99,6 +101,9 @@ namespace Microsoft.Xna.Platform.Audio
             // Dequeue all the submitted buffers
             _voice.FlushSourceBuffers();
 
+            IntPtr deferred;
+            while (_deferredBufferEnds.TryDequeue(out deferred)) { }
+
             for (int i = _queuedBuffers.Count - 1; i >= 0; i--)
             {
                 QueuedBuffer queuedBuffer = _queuedBuffers[i];
@@ -111,34 +116,92 @@ namespace Microsoft.Xna.Platform.Audio
 
         public void DynamicPlatformUpdateBuffers()
         {
-            // The XAudio implementation utilizes callbacks, so no work here.
+            // The XAudio implementation utilizes callbacks; the only work here
+            // is any buffer end a callback had to defer (see OnBufferEnd).
+            ApplyDeferredBufferEnds();
         }
 
 
+        // Buffer ends XAudio2 reported while SyncHandle was busy; applied the
+        // next time this instance holds the lock (see OnBufferEnd).
+        private readonly System.Collections.Concurrent.ConcurrentQueue<IntPtr> _deferredBufferEnds
+            = new System.Collections.Concurrent.ConcurrentQueue<IntPtr>();
+
         private void OnBufferEnd(IntPtr context)
         {
-            lock (AudioService.SyncHandle)
+            // Runs on XAudio2's own audio thread, and must never WAIT for
+            // SyncHandle.
+            //
+            // The calls that block until the audio thread is idle -
+            // DestroyVoice (SoundEffectInstance.Dispose) and StopEngine
+            // (AudioService.Shutdown, from ProcessExit) - are made with
+            // SyncHandle held. XAudio2 runs every voice's callbacks on the one
+            // thread, so a callback for ANY voice parked in Monitor.Enter at
+            // that moment waits for the lock while the lock's owner waits for
+            // the callback, and neither moves again: the game thread freezes
+            // disposing a DynamicSoundEffectInstance while another plays, or
+            // the process never finishes exiting. Found in ezmuze studio (bug
+            // board #549): with voices playing, about one exit in eight hung
+            // for good.
+            //
+            // So take the lock only if it comes quickly. If not, queue the
+            // buffer end and let the lock's holder get on; it is applied the
+            // next time this instance holds the lock, which the per-frame
+            // DynamicPlatformUpdateBuffers does before BuffersNeeded is read,
+            // so no buffer and no BufferNeeded is lost - at worst one is a
+            // frame late.
+            bool taken = false;
+            try
             {
-                // Release the queued buffer
-                for (int i = 0; i < _queuedBuffers.Count; i++)
+                System.Threading.Monitor.TryEnter(AudioService.SyncHandle, 2, ref taken);
+                if (!taken)
                 {
-                    if (_queuedBuffers[i].AudioBuffer.Context == context)
-                    {
-                        QueuedBuffer queuedBuffer = _queuedBuffers[i];
-                        _queuedBuffers.RemoveAt(i);
-
-                        queuedBuffer.AudioBuffer.Stream.Dispose();
-                        _bufferPool.Return(queuedBuffer.DataBuffer);
-                        break;
-                    }
+                    _deferredBufferEnds.Enqueue(context);
+                    return;
                 }
 
-                // Raise the event
-                lock (AudioService.SyncHandle)
+                ApplyDeferredBufferEnds();
+                ApplyBufferEnd(context);
+            }
+            catch (Exception)
+            {
+                // Nothing may escape into XAudio2's thread: an exception
+                // unwinding through native frames ends the process.
+            }
+            finally
+            {
+                if (taken)
+                    System.Threading.Monitor.Exit(AudioService.SyncHandle);
+            }
+        }
+
+        // Call with SyncHandle held.
+        private void ApplyDeferredBufferEnds()
+        {
+            IntPtr context;
+            while (_deferredBufferEnds.TryDequeue(out context))
+                ApplyBufferEnd(context);
+        }
+
+        // Call with SyncHandle held.
+        private void ApplyBufferEnd(IntPtr context)
+        {
+            // Release the queued buffer
+            for (int i = 0; i < _queuedBuffers.Count; i++)
+            {
+                if (_queuedBuffers[i].AudioBuffer.Context == context)
                 {
-                    this.BuffersNeeded++;
+                    QueuedBuffer queuedBuffer = _queuedBuffers[i];
+                    _queuedBuffers.RemoveAt(i);
+
+                    queuedBuffer.AudioBuffer.Stream.Dispose();
+                    _bufferPool.Return(queuedBuffer.DataBuffer);
+                    break;
                 }
             }
+
+            // Raise the event
+            this.BuffersNeeded++;
         }
 
         protected override void Dispose(bool disposing)
