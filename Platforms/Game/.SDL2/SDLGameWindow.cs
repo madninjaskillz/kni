@@ -288,7 +288,13 @@ namespace Microsoft.Xna.Framework
                 TouchPanel.DisplayHeight = _height;
             }
 
-            if (_pIcon != IntPtr.Zero)
+            // fissure/ezmuze: not on macOS. There a window icon is not a title-bar
+            // picture but the APPLICATION's: SDL hands it to
+            // NSApp.applicationIconImage, which replaces the bundle's .icns in
+            // the Dock and the app switcher -- with KNI's own logo, unless the
+            // app embeds an Icon.bmp, and even then with a small bitmap in place
+            // of a 1024px icns. A Mac app's icon is its bundle's; leave it be.
+            if (_pIcon != IntPtr.Zero && CurrentPlatform.OS != OS.MacOSX)
                 SDL.WINDOW.SetIcon(_handle, _pIcon);
 
             SDL.WINDOW.SetBordered(_handle, _isBorderless ? 0 : 1);
