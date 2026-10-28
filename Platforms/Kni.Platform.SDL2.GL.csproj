@@ -4,6 +4,10 @@
   <PropertyGroup>
     <Version>4.3.9001.0</Version>
     <AssemblyVersion>4.3.9001.0</AssemblyVersion>
+    <!-- fissure: the macOS-patched build (README.fissure.md). Only this package's version
+         changes; the assembly version, and the nkast.Xna.Framework.* 4.3.9001 dependencies,
+         stay as released so the stock framework packages still bind. -->
+    <PackageVersion>4.3.9001.1-fissure.1</PackageVersion>
   </PropertyGroup>
 
   <PropertyGroup>
