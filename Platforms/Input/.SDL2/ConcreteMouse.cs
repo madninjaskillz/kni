@@ -72,6 +72,16 @@ namespace Microsoft.Xna.Platform.Input
                         }
                         break;
                 }
+
+                // fissure/ezmuze: SDL reports points; the window reports its size in
+                // pixels on a high-DPI window (SdlGameWindow.IsHighDpi), and
+                // the two have to agree or every click lands at half distance.
+                float scale = (gameWindow != null) ? gameWindow.BackingScale : 1f;
+                if (scale != 1f)
+                {
+                    mousePos.X = (int)Math.Round(mousePos.X * scale);
+                    mousePos.Y = (int)Math.Round(mousePos.Y * scale);
+                }
             }
             else // (wndHandle == IntPtr.Zero)
             {
@@ -103,7 +113,8 @@ namespace Microsoft.Xna.Platform.Input
         {
             SdlGameWindow gameWindow = SdlGameWindow.FromHandle(_wndHandle);
 
-            SDL.MOUSE.WarpInWindow(gameWindow.Handle, x, y);
+            float scale = gameWindow.BackingScale;
+            SDL.MOUSE.WarpInWindow(gameWindow.Handle, (int)Math.Round(x / scale), (int)Math.Round(y / scale));
         }
 
         public override void PlatformSetCursor(MouseCursor cursor)

@@ -108,6 +108,12 @@ internal partial class Sdl
         public delegate int d_sdl_gl_getswapinterval();
         public d_sdl_gl_getswapinterval GetSwapInterval;
 
+        // fissure/ezmuze: the GL drawable in PIXELS, which differs from the window size
+        // (in points) on a high-DPI window -- see SdlGameWindow.IsHighDpi.
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate void d_sdl_gl_getdrawablesize(IntPtr window, out int w, out int h);
+        public d_sdl_gl_getdrawablesize GetDrawableSize; // SDL 2.0.1
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate int d_sdl_gl_makecurrent(IntPtr window, IntPtr context);
         public d_sdl_gl_makecurrent MakeCurrent;
@@ -134,6 +140,7 @@ internal partial class Sdl
         private void LoadEntryPoints(IntPtr library)
         {
             SDL_GL_CreateContext = FuncLoader.LoadFunctionOrNull<d_sdl_gl_createcontext>(library, "SDL_GL_CreateContext");
+            GetDrawableSize = FuncLoader.LoadFunctionOrNull<d_sdl_gl_getdrawablesize>(library, "SDL_GL_GetDrawableSize");
             DeleteContext = FuncLoader.LoadFunctionOrNull<d_sdl_gl_deletecontext>(library, "SDL_GL_DeleteContext");
             SDL_GL_GetCurrentContext = FuncLoader.LoadFunctionOrNull<d_sdl_gl_getcurrentcontext>(library, "SDL_GL_GetCurrentContext");
             GetProcAddress = FuncLoader.LoadFunctionOrNull<d_sdl_gl_getprocaddress>(library, "SDL_GL_GetProcAddress");

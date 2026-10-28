@@ -81,6 +81,53 @@ namespace Microsoft.Xna.Framework
             }
         }
 
+        // fissure/ezmuze: Retina. SDL creates a macOS window's GL drawable at POINT
+        // resolution unless the window asks for SDL_WINDOW_ALLOW_HIGHDPI, and
+        // macOS then stretches it 2x onto the panel -- everything, text most of
+        // all, comes out soft and blocky. With the flag, window sizes and mouse
+        // positions stay in points while the drawable is in pixels, so on a
+        // high-DPI window this class keeps _width/_height (and so ClientBounds
+        // and the backbuffer) in DRAWABLE PIXELS, and converts only where SDL
+        // speaks points: setting the size, centring, and the mouse
+        // (ConcreteMouse). That is the model Windows gives a Per-Monitor-V2
+        // process, where everything is physical pixels and the app scales its
+        // own UI. macOS only: SDL's flag means other things elsewhere.
+        internal static bool IsHighDpi
+        {
+            get { return CurrentPlatform.OS == OS.MacOSX; }
+        }
+
+        /// <summary>Drawable pixels per window point: 2 on a Retina display,
+        /// 1 on a standard one, and always 1 where <see cref="IsHighDpi"/> is
+        /// off. Read live, because it changes when the window moves between
+        /// displays.</summary>
+        internal float BackingScale
+        {
+            get
+            {
+                if (!IsHighDpi || _handle == IntPtr.Zero || SDL.OpenGL.GetDrawableSize == null)
+                    return 1f;
+
+                int w, h, pw, ph;
+                SDL.WINDOW.GetSize(_handle, out w, out h);
+                SDL.OpenGL.GetDrawableSize(_handle, out pw, out ph);
+                return (w > 0 && pw > 0) ? (float)pw / w : 1f;
+            }
+        }
+
+        private void GetClientPixelSize(out int width, out int height)
+        {
+            if (IsHighDpi && SDL.OpenGL.GetDrawableSize != null)
+                SDL.OpenGL.GetDrawableSize(_handle, out width, out height);
+            else
+                SDL.WINDOW.GetSize(_handle, out width, out height);
+        }
+
+        private static int PixelsToPoints(int pixels, float scale)
+        {
+            return (scale == 1f) ? pixels : (int)Math.Round(pixels / scale);
+        }
+
         public override DisplayOrientation CurrentOrientation
         {
             get { return DisplayOrientation.Default; }
@@ -198,6 +245,9 @@ namespace Microsoft.Xna.Framework
                 Sdl.Window.State.InputFocus |
                 Sdl.Window.State.MouseFocus;
 
+            if (IsHighDpi)
+                initflags |= Sdl.Window.State.AllowHighDPI;
+
             IntPtr oldhandle = _handle;
             if (_handle != IntPtr.Zero)
             {
@@ -222,6 +272,10 @@ namespace Microsoft.Xna.Framework
 
             _width = width;
             _height = height;
+
+            // fissure/ezmuze: created at width x height POINTS; from here on it is pixels.
+            if (IsHighDpi)
+                GetClientPixelSize(out _width, out _height);
 
             Id = SDL.WINDOW.GetWindowId(_handle);
 
@@ -520,6 +574,15 @@ namespace Microsoft.Xna.Framework
             Rectangle prevBounds = ClientBounds;
             int displayIndex = SDL.WINDOW.GetDisplayIndex(Handle);
 
+            // fissure/ezmuze: the sizes here are backbuffer PIXELS; SDL's window size,
+            // position and display bounds are POINTS (see IsHighDpi).
+            float scale = BackingScale;
+            int pixelWidth = clientWidth, pixelHeight = clientHeight;
+            clientWidth = PixelsToPoints(pixelWidth, scale);
+            clientHeight = PixelsToPoints(pixelHeight, scale);
+            prevBounds.Width = PixelsToPoints(prevBounds.Width, scale);
+            prevBounds.Height = PixelsToPoints(prevBounds.Height, scale);
+
             Sdl.Rectangle displayRect;
             SDL.DISPLAY.GetBounds(displayIndex, out displayRect);
 
@@ -545,9 +608,12 @@ namespace Microsoft.Xna.Framework
             else
             {
                 SDL.WINDOW.SetSize(Handle, clientWidth, clientHeight);
-                _width = clientWidth;
-                _height = clientHeight;
+                _width = pixelWidth;
+                _height = pixelHeight;
             }
+
+            if (IsHighDpi)
+                GetClientPixelSize(out _width, out _height);
 
             // If this window is resizable, there is a bug in SDL 2.0.4 where
             // after the window gets resized, window position information
@@ -593,6 +659,12 @@ namespace Microsoft.Xna.Framework
         {
             GraphicsDevice device = _game.GraphicsDevice;
 
+            // fissure/ezmuze: the event carries the window size in points. Also how a
+            // move to a display with another backing scale arrives: SDL forces
+            // a resize event for it, and the drawable is what changed.
+            if (IsHighDpi)
+                GetClientPixelSize(out width, out height);
+
             // SDL reports many resize events even if the Size didn't change.
             // Only call the code below if it actually changed.
             if (device.PresentationParameters.BackBufferWidth  != width
@@ -607,7 +679,7 @@ namespace Microsoft.Xna.Framework
                     device.ScissorRectangle = new Rectangle(0, 0, width, height);
                 }
 
-                SDL.WINDOW.GetSize(Handle, out _width, out _height);
+                GetClientPixelSize(out _width, out _height);
 
                 OnClientSizeChanged();
             }
