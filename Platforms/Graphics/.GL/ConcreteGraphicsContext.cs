@@ -64,6 +64,11 @@ namespace Microsoft.Xna.Platform.Graphics
 
         internal GLVersion _glVersion;
 
+        // fissure/ezmuze: see StreamUserVertices.
+        internal bool _streamUserPrimitives;
+        private int _userVertexBuffer;
+        private int _userIndexBuffer;
+
 
         public override Viewport Viewport
         {
@@ -1005,13 +1010,21 @@ namespace Microsoft.Xna.Platform.Graphics
             fixed (T* pVertexData = &vertexData[0])
             {
                 IntPtr vertexAddr = (IntPtr)pVertexData;
+                int firstVertex = vertexOffset;
+                if (_streamUserPrimitives)
+                {
+                    vertexAddr = StreamUserVertices(
+                        vertexAddr + vertexDeclaration.VertexStride * vertexOffset,
+                        vertexDeclaration.VertexStride * vertexCount);
+                    firstVertex = 0;
+                }
 
                 // Setup the vertex declaration to point at the VB data.
                 PlatformApplyUserVertexData(vertexDeclaration, vertexAddr);
 
                 //Draw
                 GL.DrawArrays(ConcreteGraphicsContext.PrimitiveTypeGL(primitiveType),
-                              vertexOffset,
+                              firstVertex,
                               vertexCount);
                 GL.CheckGLError();
 
@@ -1040,6 +1053,13 @@ namespace Microsoft.Xna.Platform.Graphics
             {
                 IntPtr vertexAddr = (IntPtr)pVertexData;
                 vertexAddr = vertexAddr + vertexDeclaration.VertexStride * vertexOffset;
+                IntPtr indexAddr = (IntPtr)pIndexData + (indexOffset * sizeof(short));
+                int indexCount = GraphicsContextStrategy.GetElementCountArray(primitiveType, primitiveCount);
+                if (_streamUserPrimitives)
+                {
+                    vertexAddr = StreamUserVertices(vertexAddr, vertexDeclaration.VertexStride * numVertices);
+                    indexAddr = StreamUserIndices(indexAddr, indexCount * sizeof(short));
+                }
 
                 // Setup the vertex declaration to point at the VB data.
                 PlatformApplyUserVertexData(vertexDeclaration, vertexAddr);
@@ -1047,9 +1067,9 @@ namespace Microsoft.Xna.Platform.Graphics
                 //Draw
                 GL.DrawElements(
                     ConcreteGraphicsContext.PrimitiveTypeGL(primitiveType),
-                    GraphicsContextStrategy.GetElementCountArray(primitiveType, primitiveCount),
+                    indexCount,
                     DrawElementsType.UnsignedShort,
-                    (IntPtr)pIndexData + (indexOffset * sizeof(short)));
+                    indexAddr);
                 GL.CheckGLError();
 
                 base.Metrics_AddDrawCount();
@@ -1077,6 +1097,13 @@ namespace Microsoft.Xna.Platform.Graphics
             {
                 IntPtr vertexAddr = (IntPtr)pVertexData;
                 vertexAddr = vertexAddr + vertexDeclaration.VertexStride * vertexOffset;
+                IntPtr indexAddr = (IntPtr)pIndexData + (indexOffset * sizeof(int));
+                int indexCount = GraphicsContextStrategy.GetElementCountArray(primitiveType, primitiveCount);
+                if (_streamUserPrimitives)
+                {
+                    vertexAddr = StreamUserVertices(vertexAddr, vertexDeclaration.VertexStride * numVertices);
+                    indexAddr = StreamUserIndices(indexAddr, indexCount * sizeof(int));
+                }
 
                 // Setup the vertex declaration to point at the VB data.
                 PlatformApplyUserVertexData(vertexDeclaration, vertexAddr);
@@ -1084,14 +1111,58 @@ namespace Microsoft.Xna.Platform.Graphics
                 //Draw
                 GL.DrawElements(
                     ConcreteGraphicsContext.PrimitiveTypeGL(primitiveType),
-                    GraphicsContextStrategy.GetElementCountArray(primitiveType, primitiveCount),
+                    indexCount,
                     DrawElementsType.UnsignedInt,
-                    (IntPtr)pIndexData + (indexOffset * sizeof(int)));
+                    indexAddr);
                 GL.CheckGLError();
 
                 base.Metrics_AddDrawCount();
                 base.Metrics_AddPrimitiveCount(primitiveCount);
             }
+        }
+
+        // fissure/ezmuze: a Core Profile context (macOS) has no client-side vertex arrays.
+        // With a vertex array object bound -- and Core requires one -- pointing
+        // glVertexAttribPointer or glDrawElements at CPU memory is
+        // GL_INVALID_OPERATION, which is exactly what the DrawUser* methods do
+        // everywhere else. So when the platform sets _streamUserPrimitives, they
+        // copy the caller's data into a buffer object owned here and draw from
+        // that. Each call re-specifies the whole store with BufferData, which
+        // orphans the previous one, so there is no stall on storage the GPU is
+        // still reading. Returns the offset to draw from: always 0.
+        // The callers already set _vertexBuffersDirty, so the real vertex buffer
+        // rebinds on next use.
+        private IntPtr StreamUserVertices(IntPtr data, int byteCount)
+        {
+            if (_userVertexBuffer == 0)
+            {
+                _userVertexBuffer = GL.GenBuffer();
+                GL.CheckGLError();
+            }
+
+            GL.BindBuffer(BufferTarget.ArrayBuffer, _userVertexBuffer);
+            GL.CheckGLError();
+            GL.BufferData(BufferTarget.ArrayBuffer, (IntPtr)byteCount, data, BufferUsageHint.StreamDraw);
+            GL.CheckGLError();
+            return IntPtr.Zero;
+        }
+
+        // fissure/ezmuze: the index half of StreamUserVertices. The element array binding
+        // is part of the vertex array object, so this leaves _indexBufferDirty set
+        // (the callers already do) and the real index buffer rebinds on next use.
+        private IntPtr StreamUserIndices(IntPtr data, int byteCount)
+        {
+            if (_userIndexBuffer == 0)
+            {
+                _userIndexBuffer = GL.GenBuffer();
+                GL.CheckGLError();
+            }
+
+            GL.BindBuffer(BufferTarget.ElementArrayBuffer, _userIndexBuffer);
+            GL.CheckGLError();
+            GL.BufferData(BufferTarget.ElementArrayBuffer, (IntPtr)byteCount, data, BufferUsageHint.StreamDraw);
+            GL.CheckGLError();
+            return IntPtr.Zero;
         }
 
         public override void Flush()

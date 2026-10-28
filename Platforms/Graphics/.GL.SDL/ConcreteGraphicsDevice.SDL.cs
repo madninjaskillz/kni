@@ -61,7 +61,10 @@ namespace Microsoft.Xna.Platform.Graphics
         {
 #if DEBUG
             // create debug context, so we get better error messages (glDebugMessageCallback)
-            Sdl.Current.OpenGL.SetAttribute(Sdl.GL.Attribute.ContextFlags, (int)Sdl.GL.ContextFlag.Debug);
+            // fissure/ezmuze: keep ForwardCompatible on macOS -- see OGL_SDL.SetContextVersion.
+            Sdl.Current.OpenGL.SetAttribute(Sdl.GL.Attribute.ContextFlags, OGL_SDL.IsCoreProfile
+                ? (int)(Sdl.GL.ContextFlag.Debug | Sdl.GL.ContextFlag.ForwardCompatible)
+                : (int)Sdl.GL.ContextFlag.Debug);
 #endif
 
             return new ConcreteGraphicsContext(context);

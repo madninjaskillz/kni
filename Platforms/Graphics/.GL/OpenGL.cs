@@ -596,6 +596,12 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
         [System.Security.SuppressUnmanagedCodeSecurity()]
         [UnmanagedFunctionPointer(callingConvention)]
         [MonoNativeFunctionWrapper]
+        internal delegate IntPtr GetStringiDelegate(StringName param, int index);
+        internal GetStringiDelegate GetStringiInternal; // OpenGL 3.0, GLES 3.0.
+
+        [System.Security.SuppressUnmanagedCodeSecurity()]
+        [UnmanagedFunctionPointer(callingConvention)]
+        [MonoNativeFunctionWrapper]
         internal delegate void ClearDepthDelegate(float depth);
         internal ClearDepthDelegate ClearDepth;
 
@@ -1507,6 +1513,7 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
             DisableVertexAttribArray = LoadFunctionOrNull<DisableVertexAttribArrayDelegate>("glDisableVertexAttribArray");
             GetIntegerv = LoadFunctionOrNull<GetIntegerDelegate>("glGetIntegerv");
             GetStringInternal = LoadFunctionOrNull<GetStringDelegate>("glGetString");
+            GetStringiInternal = LoadFunctionOrNull<GetStringiDelegate>("glGetStringi");
             ClearDepth = LoadFunctionOrNull<ClearDepthDelegate>("glClearDepth");
             if (ClearDepth == null)
                 ClearDepth = LoadFunctionOrNull<ClearDepthDelegate>("glClearDepthf");
@@ -1718,7 +1725,20 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
             string extstring = this.GetString(StringName.Extensions);
             ErrorCode error = this.GetError();
             if (error != ErrorCode.NO_ERROR || string.IsNullOrEmpty(extstring))
-                return;
+            {
+                // fissure/ezmuze: a Core Profile context (macOS, see OGL_SDL.SetContextVersion)
+                // removed glGetString(GL_EXTENSIONS) -- it is GL_INVALID_ENUM there.
+                // Returning here left Extensions null, and the capability probe's
+                // first Extensions.Contains threw. Read the list the GL 3.0 way
+                // instead. Compatibility contexts never reach this, so Windows and
+                // Linux keep the exact path they always had.
+                extstring = GetExtensionsIndexed();
+                if (string.IsNullOrEmpty(extstring))
+                {
+                    _extensions = new HashSet<string>();
+                    return;
+                }
+            }
 
             string[] extList = extstring.Split(' ');
             _extensions = new HashSet<string>(extList);
@@ -1847,6 +1867,26 @@ namespace Microsoft.Xna.Platform.Graphics.OpenGL
         {
             IntPtr pStr = GetStringInternal(name);
             return Marshal.PtrToStringAnsi(pStr);
+        }
+
+        // fissure/ezmuze: GL 3.0+ extension enumeration, one name per index, joined with
+        // spaces so InitExtensions can treat it exactly like the legacy string.
+        private string GetExtensionsIndexed()
+        {
+            const int GL_NUM_EXTENSIONS = 0x821D;
+
+            if (GetStringiInternal == null || GetIntegerv == null)
+                return null;
+
+            int count;
+            GetInteger(GL_NUM_EXTENSIONS, out count);
+            if (this.GetError() != ErrorCode.NO_ERROR || count <= 0)
+                return null;
+
+            string[] names = new string[count];
+            for (int i = 0; i < count; i++)
+                names[i] = Marshal.PtrToStringAnsi(GetStringiInternal(StringName.Extensions, i));
+            return string.Join(" ", names);
         }
 
         internal string GetProgramInfoLog(int programId)

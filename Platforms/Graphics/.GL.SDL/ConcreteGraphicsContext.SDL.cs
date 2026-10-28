@@ -47,6 +47,25 @@ namespace Microsoft.Xna.Platform.Graphics
             _glSharedContext = SDL.OpenGL.CreateGLContext(_glSharedContextWindowHandle);
 
             MakeCurrent(((IPlatformGraphicsContext)context).DeviceStrategy.PresentationParameters.DeviceWindowHandle);
+
+            // fissure/ezmuze: a Core Profile context (macOS, see OGL_SDL.SetContextVersion)
+            // draws nothing without a vertex array object bound -- every
+            // glVertexAttribPointer is GL_INVALID_OPERATION. KNI never binds one
+            // (compatibility contexts provide a default), so bind a single VAO
+            // for this context's lifetime; all attribute state lives in it,
+            // exactly as it lived in the default one. VAOs are not shared, but
+            // _glDisposeContext and _glSharedContext only create and delete
+            // resources, so they need none.
+            if (OGL_SDL.IsCoreProfile)
+            {
+                GL.BindVertexArray(GL.GenVertexArray());
+                GL.CheckGLError();
+
+                // Nor does Core Profile have client-side vertex arrays, which
+                // every DrawUser* call relies on -- see StreamUserVertices.
+                _streamUserPrimitives = true;
+            }
+
             int swapInterval = ConcreteGraphicsContext.ToGLSwapInterval(((IPlatformGraphicsContext)context).DeviceStrategy.PresentationParameters.PresentationInterval);
             SDL.OpenGL.SetSwapInterval(swapInterval);
 

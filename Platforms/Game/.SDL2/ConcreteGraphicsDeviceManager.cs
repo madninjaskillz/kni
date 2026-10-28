@@ -155,8 +155,7 @@ namespace Microsoft.Xna.Platform
             }
 
             SDL.OpenGL.SetAttribute(Sdl.GL.Attribute.DoubleBuffer, 1);
-            SDL.OpenGL.SetAttribute(Sdl.GL.Attribute.ContextMajorVersion, 2);
-            SDL.OpenGL.SetAttribute(Sdl.GL.Attribute.ContextMinorVersion, 1);
+            Microsoft.Xna.Platform.Graphics.OpenGL.OGL_SDL.SetContextVersion(2, 1);
 
             if (presentationParameters.MultiSampleCount > 0)
             {

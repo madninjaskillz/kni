@@ -181,8 +181,7 @@ namespace Microsoft.Xna.Platform.Graphics
             IntPtr glContext = IntPtr.Zero;
             try
             {
-                SDL.OpenGL.SetAttribute(Sdl.GL.Attribute.ContextMajorVersion, 2);
-                SDL.OpenGL.SetAttribute(Sdl.GL.Attribute.ContextMinorVersion, 0);
+                OGL_SDL.SetContextVersion(2, 0);
 
                 glWindowHandle = SDL.WINDOW.Create("KnisDefaultAdapterWindow", 0, 0, 0, 0,
                     Sdl.Window.State.Hidden | Sdl.Window.State.OpenGL);
